@@ -1,5 +1,6 @@
 streamlit
-pandas
+streamlit-autorefresh
+sympy
 numpy
-scikit-learn
-matplotlib
+pandas
+plotly
