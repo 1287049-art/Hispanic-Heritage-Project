@@ -1,542 +1,1204 @@
 import html
-import random
+import math
 import re
+
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import sympy as sp
+import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
+import sympy as sp
+from streamlit_autorefresh import st_autorefresh
+from sympy.parsing.sympy_parser import (
+    parse_expr,
+    standard_transformations,
+    implicit_multiplication_application,
+    convert_xor,
+)
 
-# Page Config
 st.set_page_config(
-    page_title="Hispanic Heritage Historical Data & Calculus Explorer 2.0",
-    page_icon="🎓",
-    layout="wide"
+    page_title="Hispanic Heritage Historical Data Explorer 2.0",
+    page_icon="📈",
+    layout="wide",
 )
 
-# ---------------------------------------------------------
-# DATA & HISTORICAL REGRESSION HELPERS
-# ---------------------------------------------------------
-@st.cache_data
-def get_historical_data():
-    years = np.arange(1950, 2024)
-    data = {
-        'Argentina': {
-            'Population': np.linspace(17e6, 45e6, len(years)) + np.random.normal(0, 1e6, len(years)),
-            'Unemployment rate': np.random.uniform(3, 12, len(years)),
-            'Life expectancy': np.linspace(60, 77, len(years)) + np.random.normal(0, 1, len(years)),
-        },
-        'Brazil': {
-            'Population': np.linspace(53e6, 214e6, len(years)) + np.random.normal(0, 2e6, len(years)),
-            'Unemployment rate': np.random.uniform(2, 14, len(years)),
-            'Life expectancy': np.linspace(55, 76, len(years)) + np.random.normal(0, 1, len(years)),
-        },
-        'Mexico': {
-            'Population': np.linspace(28e6, 130e6, len(years)) + np.random.normal(0, 1.5e6, len(years)),
-            'Unemployment rate': np.random.uniform(2, 10, len(years)),
-            'Life expectancy': np.linspace(50, 75, len(years)) + np.random.normal(0, 1, len(years)),
-        }
-    }
-    return years, data
-
-def fit_poly_regression(x, y, degree=3):
-    model = make_pipeline(PolynomialFeatures(degree), LinearRegression())
-    model.fit(x.reshape(-1, 1), y)
-    return model
-
-def poly_to_sympy_str(model):
-    coefs = model.named_steps['linearregression'].coef_
-    intercept = model.named_steps['linearregression'].intercept_
-    terms = [f"{intercept:.4f}"]
-    for i, c in enumerate(coefs[1:], start=1):
-        sign = "+" if c >= 0 else "-"
-        terms.append(f"{sign} {abs(c):.6e}*x**{i}")
-    return " ".join(terms)
-
-# ---------------------------------------------------------
-# CONTEXT DEFINITIONS & DEFAULT FUNCTIONS
-# ---------------------------------------------------------
-CONTEXT_PRESETS = {
-    "Business & Economics": {
-        "desc": "Revenue growth and market expansion analysis",
-        "var_name": "Time", "var_symbol": "t", "units_x": "years",
-        "dep_name": "Revenue", "units_y": "million USD",
-        "suggested_expr": "10 * log(t + 1) + 2 * sin(t)",
-        "domain": (1.0, 15.0),
-        "visual_type": "Business Indicator"
-    },
-    "Engineering & Kinematics": {
-        "desc": "Prosthetic leg displacement and gait motion kinematics",
-        "var_name": "Time", "var_symbol": "t", "units_x": "seconds",
-        "dep_name": "Position", "units_y": "meters",
-        "suggested_expr": "2 * sin(2 * t) + 0.5 * t",
-        "domain": (0.0, 10.0),
-        "visual_type": "Walking Person (Prosthetic)"
-    },
-    "Medical & Bioengineering": {
-        "desc": "Blood drug concentration over time following dosage",
-        "var_name": "Time", "var_symbol": "t", "units_x": "hours",
-        "dep_name": "Concentration", "units_y": "mg/L",
-        "suggested_expr": "15 * t * exp(-0.5 * t)",
-        "domain": (0.0, 12.0),
-        "visual_type": "Drug Tank Indicator"
-    },
-    "Sports Science": {
-        "desc": "Vertical projectile trajectory during athletic jumps",
-        "var_name": "Time", "var_symbol": "t", "units_x": "seconds",
-        "dep_name": "Height", "units_y": "meters",
-        "suggested_expr": "-4.9 * t**2 + 12 * t + 1",
-        "domain": (0.0, 2.5),
-        "visual_type": "Moving Object / Projectile"
-    },
-    "Biology & Cell Growth": {
-        "desc": "Cell colony growth under limited resource conditions",
-        "var_name": "Time", "var_symbol": "t", "units_x": "hours",
-        "dep_name": "Population", "units_y": "cells (thousands)",
-        "suggested_expr": "100 / (1 + 9 * exp(-0.8 * t))",
-        "domain": (0.0, 10.0),
-        "visual_type": "Cell Colony / Population"
-    },
-    "Economic Forecasting": {
-        "desc": "Macroeconomic GDP trajectory analysis",
-        "var_name": "Time", "var_symbol": "t", "units_x": "years",
-        "dep_name": "GDP Index", "units_y": "points",
-        "suggested_expr": "50 * (1.05)**t + 5 * cos(t)",
-        "domain": (0.0, 20.0),
-        "visual_type": "Business Indicator"
-    },
-    "Weather & Climate": {
-        "desc": "Diurnal atmospheric temperature fluctuations",
-        "var_name": "Time", "var_symbol": "t", "units_x": "hours",
-        "dep_name": "Temperature", "units_y": "°C",
-        "suggested_expr": "20 + 8 * sin(pi * (t - 8) / 12)",
-        "domain": (0.0, 24.0),
-        "visual_type": "Thermometer"
-    },
-    "Custom Context": {
-        "desc": "User defined dynamic contextual function model",
-        "var_name": "Input Variable", "var_symbol": "x", "units_x": "units_x",
-        "dep_name": "Output Variable", "units_y": "units_y",
-        "suggested_expr": "x**3 - 3*x",
-        "domain": (-3.0, 3.0),
-        "visual_type": "Moving Object / Projectile"
-    }
-}
-
-# ------------------------
-# SIDEBAR NAVIGATION
-# ------------------------
-st.sidebar.title("⚙️ Controls & Options")
-
-course_level = st.sidebar.selectbox(
-    "Select Academic Course Level",
-    ["Honors Algebra 2", "Precalculus", "Calculus"]
+st.title("Hispanic Heritage Historical Data Explorer 2.0")
+st.caption(
+    "Explore functions, models, and calculus in real-world contexts. "
+    "Built-in examples are illustrative, not verified historical datasets."
 )
 
-context_mode = st.sidebar.selectbox(
-    "Select Context Domain",
-    list(CONTEXT_PRESETS.keys())
+x = sp.Symbol("x", real=True)
+
+TRANSFORMS = standard_transformations + (
+    implicit_multiplication_application,
+    convert_xor,
 )
 
-preset = CONTEXT_PRESETS[context_mode]
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎨 Visual Banner Customization")
-banner_text = st.sidebar.text_input("Banner Header Text", value="Hispanic Heritage Math & Data Lab")
-font_family = st.sidebar.selectbox("Font Style", ["Arial", "Courier New", "Georgia", "Verdana", "Impact"])
-font_size = st.sidebar.slider("Font Size", 20, 72, 36)
-bg_theme = st.sidebar.selectbox("Background Theme", ["Light", "Dark", "Sky", "Sunset", "Forest", "Lavender", "Ocean", "Midnight"])
-name_mode = st.sidebar.selectbox("Display Style", ["Centered", "Ticker Tape", "Repeated"])
-effect = st.sidebar.selectbox("Particle Effect", ["None", "Rain", "Snow", "Hail", "Wind Gust", "Confetti", "Tornado"])
-anim_speed = st.sidebar.slider("Effect Speed", 1, 10, 5)
-
-# ------------------------
-# BANNER DISPLAY STAGE
-# ------------------------
-bg_styles = {
-    "Light": ("#f7f8fc", "#202437"),
-    "Dark": ("#10131c", "#f7f8ff"),
-    "Sky": ("linear-gradient(135deg, #bde7ff, #f5fcff)", "#173c61"),
-    "Sunset": ("linear-gradient(135deg, #ffb36b, #ff6f91, #7656a8)", "#ffffff"),
-    "Forest": ("linear-gradient(135deg, #153d2b, #4f8b61)", "#f4fff4"),
-    "Lavender": ("linear-gradient(135deg, #e9ddff, #c7d7ff)", "#342a5e"),
-    "Ocean": ("linear-gradient(135deg, #006d83, #42c6c8)", "#ffffff"),
-    "Midnight": ("radial-gradient(circle at top, #27356b, #090b18 75%)", "#ffffff"),
-}
-bg_css, text_color = bg_styles[bg_theme]
-
-symbols = {
-    "Rain": ["💧", "💦"], "Snow": ["❄️", "❅"], "Hail": ["🧊", "●"],
-    "Wind Gust": ["〰", "💨"], "Confetti": ["🎉", "✦", "★"], "Tornado": ["🌪️", "🌀"]
+LOCALS = {
+    "x": x,
+    "sin": sp.sin,
+    "cos": sp.cos,
+    "tan": sp.tan,
+    "sqrt": sp.sqrt,
+    "log": sp.log,
+    "ln": sp.log,
+    "exp": sp.exp,
+    "abs": sp.Abs,
+    "pi": sp.pi,
+    "e": sp.E,
 }
 
-particles_html = ""
-if effect != "None":
-    rng = random.Random(42)
-    for _ in range(35):
-        s = rng.choice(symbols[effect])
-        left = rng.randint(0, 100)
-        delay = rng.uniform(0, 4)
-        dur = rng.uniform(2, 5) * (1.5 - anim_speed / 12)
-        sz = rng.randint(14, 26)
-        drift = rng.randint(-60, 60)
-        particles_html += f'<span class="particle" style="left:{left}%;animation-delay:-{delay:.2f}s;animation-duration:{dur:.2f}s;font-size:{sz}px;--drift:{drift}px;">{html.escape(s)}</span>'
+COURSES = ["Honors Algebra 2", "Precalculus", "Calculus"]
 
-safe_title = html.escape(banner_text)
-if name_mode == "Ticker Tape":
-    banner_content = f'<div class="ticker"><span>{safe_title} &nbsp;&nbsp;✨&nbsp;&nbsp; {safe_title}</span></div>'
-elif name_mode == "Repeated":
-    banner_content = '<div class="repeated">' + "<br>".join([safe_title] * 3) + "</div>"
-else:
-    banner_content = f'<div class="center-name">{safe_title}</div>'
+CONTEXTS = [
+    "Business",
+    "Engineering",
+    "Medical",
+    "Sports science",
+    "Biology",
+    "Bioengineering",
+    "Economic forecasting",
+    "Weather",
+    "Custom",
+]
 
-font_css_map = {
-    "Arial": "Arial, sans-serif", "Courier New": "'Courier New', monospace",
-    "Georgia": "Georgia, serif", "Verdana": "Verdana, sans-serif", "Impact": "Impact, sans-serif"
+# Function, x name, x unit, y name, y unit, description, visual
+SUGGESTIONS = {
+    "Business": (
+        "-2*(x-5)^2+80",
+        "Items sold",
+        "items",
+        "Revenue",
+        "dollars",
+        "Revenue rises toward an optimum, then falls in this simplified model.",
+        "Business / economic indicator",
+    ),
+    "Engineering": (
+        "-4.9*x^2+24*x+1.5",
+        "Time",
+        "seconds",
+        "Height",
+        "meters",
+        "A simplified projectile-height model; interpret only while the object is in flight.",
+        "Moving object or projectile",
+    ),
+    "Medical": (
+        "8*exp(-0.35*x)",
+        "Time",
+        "hours",
+        "Concentration",
+        "mg/L",
+        "An illustrative concentration-decay model, not medical advice.",
+        "Tank / concentration indicator",
+    ),
+    "Sports science": (
+        "-4.9*x^2+5*x+0.8",
+        "Time",
+        "seconds",
+        "Jump height",
+        "meters",
+        "A simplified vertical-jump model.",
+        "Moving object or projectile",
+    ),
+    "Biology": (
+        "100*x/(x+4)",
+        "Time",
+        "days",
+        "Population index",
+        "index units",
+        "A simple saturating population index, not a fitted dataset.",
+        "Population / cell colony",
+    ),
+    "Bioengineering": (
+        "35*sin(2*pi*x/2)",
+        "Time",
+        "seconds",
+        "Joint angle",
+        "degrees",
+        "A simplified periodic joint-angle pattern, not a clinical gait model.",
+        "Walking person with prosthetic leg",
+    ),
+    "Economic forecasting": (
+        "100*exp(0.04*x)",
+        "Time",
+        "years",
+        "Economic index",
+        "index points",
+        "An illustrative growth trend, not an official forecast.",
+        "Business / economic indicator",
+    ),
+    "Weather": (
+        "18+7*sin(2*pi*(x-6)/24)",
+        "Time of day",
+        "hours",
+        "Temperature",
+        "°C",
+        "A simplified repeating daily temperature pattern.",
+        "Thermometer / weather indicator",
+    ),
+    "Custom": (
+        "x^2-4*x+3",
+        "Input",
+        "units",
+        "Output",
+        "units",
+        "Describe your own situation and variables.",
+        "Business / economic indicator",
+    ),
 }
 
-html_banner = f"""
-<!doctype html>
-<html>
-<head>
-<style>
-* {{ box-sizing: border-box; }}
-html, body {{ margin: 0; padding: 0; }}
-.stage {{
-  position: relative; overflow: hidden; height: 160px; width: 100%; border-radius: 12px;
-  background: {bg_css}; color: {text_color}; font-family: {font_css_map[font_family]};
-}}
-.particle-layer {{ position:absolute; inset:0; pointer-events:none; z-index:1; }}
-.particle {{ position:absolute; top:-15%; opacity:.85; animation: fall linear infinite; }}
-.center-name {{ position:absolute; z-index:3; inset:0; display:flex; align-items:center; justify-content:center; font-size:{font_size}px; font-weight:700; text-shadow:0 2px 10px rgba(0,0,0,0.2); }}
-.repeated {{ position:absolute; z-index:3; inset:10px; text-align:center; font-size:{max(14, int(font_size*0.5))}px; font-weight:700; }}
-.ticker {{ position:absolute; z-index:3; top:35%; white-space:nowrap; font-size:{font_size}px; font-weight:700; }}
-.ticker span {{ display:inline-block; padding-left:100%; animation: marquee {max(5, 20 - anim_speed)}s linear infinite; }}
-@keyframes marquee {{ from {{ transform:translateX(0); }} to {{ transform:translateX(-100%); }} }}
-@keyframes fall {{ 0% {{ transform:translate3d(0,0,0); }} 100% {{ transform:translate3d(var(--drift), 180px, 0); }} }}
-</style>
-</head>
-<body>
-<div class="stage">
-  <div class="particle-layer">{particles_html}</div>
-  {banner_content}
-</div>
-</body>
-</html>
-"""
-components.html(html_banner, height=170)
 
-# ---------------------------------------------------------
-# TABBED FUNCTIONALITY
-# ---------------------------------------------------------
-tab_explorer, tab_data_reg = st.tabs(["📈 Function & Calculus Explorer", "🌎 Latin America Historical Data"])
-
-# =========================================================
-# TAB 1: FUNCTION & CALCULUS EXPLORER
-# =========================================================
-with tab_explorer:
-    st.header(f"Context: {context_mode}")
-    st.caption(f"Course Mode: **{course_level}** | {preset['desc']}")
-
-    col_setup, col_params = st.columns([1, 1])
-
-    with col_setup:
-        st.subheader("1. Setup & Function Source")
-        fn_source = st.radio(
-            "Select Function Source Method",
-            ["Preset Suggested Function", "Build Function Parameters", "Custom Mathematical Notation", "Use Curve Fit from Historical Data"]
+def parse_function(source):
+    if not source or not source.strip():
+        raise ValueError(
+            "Enter a function, for example x^2 - 4*x + 3."
         )
 
-        var_x = st.text_input("Independent Variable Name", value=preset["var_name"])
-        symbol_x = st.text_input("Variable Symbol (e.g. x, t)", value=preset["var_symbol"]).strip()
-        units_x = st.text_input("Independent Variable Units", value=preset["units_x"])
-
-        dep_y = st.text_input("Dependent Variable Name", value=preset["dep_name"])
-        units_y = st.text_input("Dependent Variable Units", value=preset["units_y"])
-
-    # Symbolic Variable setup
-    x_sym = sp.Symbol(symbol_x if symbol_x.isalpha() else 'x')
-    raw_expr_str = ""
-
-    with col_params:
-        st.subheader("2. Function Definition & Interval")
-
-        if fn_source == "Preset Suggested Function":
-            raw_expr_str = preset["suggested_expr"]
-            st.info(f"Using suggested function: **{raw_expr_str}**")
-
-        elif fn_source == "Build Function Parameters":
-            fn_family = st.selectbox("Select Function Family", ["Polynomial", "Exponential", "Trigonometric", "Rational"])
-            if fn_family == "Polynomial":
-                a = st.number_input("a (quadratic)", value=1.0)
-                b = st.number_input("b (linear)", value=-2.0)
-                c = st.number_input("c (constant)", value=1.0)
-                raw_expr_str = f"{a}*{symbol_x}**2 + {b}*{symbol_x} + {c}"
-            elif fn_family == "Exponential":
-                a = st.number_input("Initial Amplitude (a)", value=5.0)
-                k = st.number_input("Growth/Decay Rate (k)", value=-0.5)
-                raw_expr_str = f"{a} * exp({k} * {symbol_x})"
-            elif fn_family == "Trigonometric":
-                a = st.number_input("Amplitude (a)", value=3.0)
-                w = st.number_input("Frequency factor (w)", value=1.0)
-                raw_expr_str = f"{a} * sin({w} * {symbol_x})"
-            elif fn_family == "Rational":
-                p = st.number_input("Numerator Multiplier", value=10.0)
-                q = st.number_input("Denominator Offset", value=1.0)
-                raw_expr_str = f"{p} * {symbol_x} / ({symbol_x}**2 + {q})"
-
-        elif fn_source == "Custom Mathematical Notation":
-            raw_expr_str = st.text_input("Enter function f(" + symbol_x + ")", value=preset["suggested_expr"])
-            st.caption("Supported operators: +, -, *, /, **, exp(), sin(), cos(), tan(), log(), sqrt(). Use '^' or '**' for powers.")
-
-        elif fn_source == "Use Curve Fit from Historical Data":
-            hist_years, hist_data = get_historical_data()
-            c_sel = st.selectbox("Select Country", list(hist_data.keys()))
-            cat_sel = st.selectbox("Select Indicator", ['Population', 'Unemployment rate', 'Life expectancy'])
-            deg_sel = st.slider("Polynomial Fit Degree", 1, 5, 2)
-            
-            y_vals = hist_data[c_sel][cat_sel]
-            x_vals = hist_years - hist_years[0] # Scale starting at 0
-            
-            fit_model = fit_poly_regression(x_vals, y_vals, deg_sel)
-            raw_expr_str = poly_to_sympy_str(fit_model)
-            st.success(f"Generated Fitted Polynomial String: `{raw_expr_str}`")
-
-        # Range and Interval Setup
-        d_min_default, d_max_default = preset["domain"]
-        d_min = st.number_input("Domain Minimum", value=float(d_min_default))
-        d_max = st.number_input("Domain Maximum", value=float(d_max_default))
-
-        if d_min >= d_max:
-            st.error("Domain Minimum must be strictly less than Domain Maximum.")
-            d_max = d_min + 1.0
-
-    # Clean and parse math expression
-    clean_expr_str = raw_expr_str.replace("^", "**")
-    
-    expr_valid = False
-    f_sym = None
-    f_prime_sym = None
-    f_double_prime_sym = None
+    if (
+        len(source) > 250
+        or "__" in source
+        or re.search(r"[{}\[\];]", source)
+    ):
+        raise ValueError(
+            "Use a function under 250 characters with ordinary math notation only."
+        )
 
     try:
-        # Custom transformations for common notations
-        parsed_expr = sp.sympify(clean_expr_str, locals={symbol_x: x_sym, 'e': sp.E, 'pi': sp.pi})
-        f_sym = parsed_expr
-        f_prime_sym = sp.diff(f_sym, x_sym)
-        f_double_prime_sym = sp.diff(f_prime_sym, x_sym)
-        expr_valid = True
-    except Exception as err:
-        st.error(f"❌ Input Expression Parsing Error: {err}. Please verify formula syntax.")
+        expr = parse_expr(
+            source,
+            local_dict=LOCALS,
+            transformations=TRANSFORMS,
+            evaluate=True,
+        )
+    except Exception as exc:
+        raise ValueError(
+            "Couldn't read that function. Try x^2, 1/(x-2), "
+            "exp(x), log(x), or sin(x)."
+        ) from exc
 
-    if expr_valid:
-        # Create numerical functions
-        f_num = sp.lambdify(x_sym, f_sym, modules=["numpy"])
-        f_prime_num = sp.lambdify(x_sym, f_prime_sym, modules=["numpy"])
-        f_double_prime_num = sp.lambdify(x_sym, f_double_prime_sym, modules=["numpy"])
+    if not isinstance(expr, sp.Expr) or (expr.free_symbols - {x}):
+        raise ValueError(
+            "Use x as the independent variable; unknown symbols are not supported."
+        )
 
-        st.markdown("---")
-        st.subheader("3. Symbolic Function & Derivative Formulations")
+    if expr.has(sp.zoo, sp.nan, sp.oo, -sp.oo):
+        raise ValueError(
+            "The expression contains an undefined or infinite constant."
+        )
 
-        col_f1, col_f2, col_f3 = st.columns(3)
-        with col_f1:
-            st.latex(f"f({symbol_x}) = " + sp.latex(f_sym))
-        with col_f2:
-            st.latex(f"f'({symbol_x}) = " + sp.latex(f_prime_sym))
-        with col_f3:
-            st.latex(f"f''({symbol_x}) = " + sp.latex(f_double_prime_sym))
+    return sp.simplify(expr)
 
-        st.markdown("---")
-        st.subheader("4. Interactive Tangent, Secant & Dynamic Evaluation")
 
-        c_eval1, c_eval2 = st.columns(2)
-        with c_eval1:
-            x_eval = st.slider(f"Instantaneous Point ({symbol_x}₀)", float(d_min), float(d_max), float((d_min + d_max) / 2.0), step=0.1)
-        with c_eval2:
-            sec_a, sec_b = st.slider(f"Secant Line Interval [x₁, x₂]", float(d_min), float(d_max), (float(d_min), float(d_max)), step=0.1)
+def val(expr, point):
+    try:
+        z = complex(sp.N(expr.subs(x, float(point))))
 
-        # Plot Controls
-        st.checkbox("Show Tangent Line at x₀", value=True, key="show_tangent")
-        st.checkbox("Show Secant Line over [x₁, x₂]", value=True, key="show_secant")
-        st.checkbox("Show First Derivative f'(x)", value=(course_level == "Calculus"), key="show_d1")
-        st.checkbox("Show Second Derivative f''(x)", value=False, key="show_d2")
+        if abs(z.imag) < 1e-7 and math.isfinite(z.real):
+            return float(z.real)
 
-        # ------------------------
-        # GRAPHING STAGE
-        # ------------------------
-        x_plot = np.linspace(d_min, d_max, 500)
-        
-        # Evaluate safely handling potential zero-division or out-of-domain errors
-        with np.errstate(divide='ignore', invalid='ignore'):
-            y_plot = np.vectorize(lambda t: float(f_sym.subs(x_sym, t).evalf()))(x_plot)
-            y_prime_plot = np.vectorize(lambda t: float(f_prime_sym.subs(x_sym, t).evalf()))(x_plot)
-            y_double_prime_plot = np.vectorize(lambda t: float(f_double_prime_sym.subs(x_sym, t).evalf()))(x_plot)
+        return None
+    except Exception:
+        return None
 
-        # Clean non-real / infinite points
-        y_plot[np.isinf(y_plot) | np.isnan(y_plot)] = np.nan
 
-        fig, ax = plt.subplots(figsize=(10, 4.5))
-        ax.plot(x_plot, y_plot, label=f"f({symbol_x})", color="#1f77b4", linewidth=2.5)
+def roots_in(expr, lo, hi, samples=1000):
+    roots = []
 
-        if st.session_state.get("show_d1"):
-            ax.plot(x_plot, y_prime_plot, label=f"f'({symbol_x})", color="#ff7f0e", linestyle="--", linewidth=1.5)
-        if st.session_state.get("show_d2"):
-            ax.plot(x_plot, y_double_prime_plot, label=f"f''({symbol_x})", color="#2ca02c", linestyle=":", linewidth=1.5)
+    try:
+        answer = sp.solveset(
+            sp.Eq(expr, 0),
+            x,
+            domain=sp.Interval(lo, hi),
+        )
 
-        # Point evaluation
-        y_eval = float(f_sym.subs(x_sym, x_eval).evalf())
-        slope_tangent = float(f_prime_sym.subs(x_sym, x_eval).evalf())
+        if isinstance(answer, sp.FiniteSet):
+            for root in answer:
+                q = float(sp.N(root))
 
-        # Plot Tangent Line
-        if st.session_state.get("show_tangent") and not np.isnan(y_eval):
-            ax.scatter([x_eval], [y_eval], color="red", zorder=5, s=60)
-            tangent_y = y_eval + slope_tangent * (x_plot - x_eval)
-            ax.plot(x_plot, tangent_y, color="red", linestyle="-.", alpha=0.7, label=f"Tangent at {symbol_x}={x_eval:.2f}")
+                if (
+                    lo - 1e-7 <= q <= hi + 1e-7
+                    and not any(abs(q - r) < 1e-4 for r in roots)
+                ):
+                    roots.append(q)
 
-        # Plot Secant Line
-        if st.session_state.get("show_secant") and sec_a != sec_b:
-            y_sec_a = float(f_sym.subs(x_sym, sec_a).evalf())
-            y_sec_b = float(f_sym.subs(x_sym, sec_b).evalf())
-            secant_slope = (y_sec_b - y_sec_a) / (sec_b - sec_a)
-            secant_y = y_sec_a + secant_slope * (x_plot - sec_a)
-            ax.scatter([sec_a, sec_b], [y_sec_a, y_sec_b], color="purple", zorder=5, s=40)
-            ax.plot(x_plot, secant_y, color="purple", linestyle=":", alpha=0.8, label=f"Secant [{sec_a:.1f}, {sec_b:.1f}]")
+    except Exception:
+        pass
 
-        ax.set_xlabel(f"{var_x} ({units_x})")
-        ax.set_ylabel(f"{dep_y} ({units_y})")
-        ax.set_xlim(d_min, d_max)
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.legend(loc="upper right")
-        st.pyplot(fig)
+    try:
+        fn = sp.lambdify(x, expr, modules=["numpy"])
+        grid = np.linspace(lo, hi, samples)
 
-        # ------------------------
-        # CALCULUS & CONCEPTUAL ANALYSIS
-        # ------------------------
-        st.markdown("---")
-        st.subheader("5. Conceptual Analysis & Contextual Interpretation")
+        with np.errstate(all="ignore"):
+            yy = np.asarray(fn(grid), dtype=float)
 
-        # Average Rate of Change Interpretation
-        if sec_a != sec_b:
-            y_sec_a = float(f_sym.subs(x_sym, sec_a).evalf())
-            y_sec_b = float(f_sym.subs(x_sym, sec_b).evalf())
-            aroc = (y_sec_b - y_sec_a) / (sec_b - sec_a)
-            st.markdown(f"**Average Rate of Change over [{sec_a:.2f}, {sec_b:.2f}]:** `{aroc:.4f}` {units_y}/{units_x}")
-            st.caption(f"Interpretation: On average, between {var_x} = {sec_a} {units_x} and {sec_b} {units_x}, {dep_y} changes at a rate of {aroc:.4f} {units_y} per {units_x}.")
+            if yy.ndim == 0:
+                yy = np.full_like(grid, float(yy))
 
-        # Instantaneous Rate Interpretation
-        st.markdown(f"**Instantaneous Rate of Change at {symbol_x} = {x_eval:.2f}:** `{slope_tangent:.4f}` {units_y}/{units_x}")
+        for i in range(len(grid) - 1):
+            aa = grid[i]
+            bb = grid[i + 1]
+            ya = yy[i]
+            yb = yy[i + 1]
 
-        if course_level == "Calculus":
-            d2_val = float(f_double_prime_sym.subs(x_sym, x_eval).evalf())
-            st.markdown(f"**Second Derivative f''({x_eval:.2f}):** `{d2_val:.4f}` {units_y}/({units_x}²)")
-            
-            concavity = "Concave Upward 📈" if d2_val > 0 else ("Concave Downward 📉" if d2_val < 0 else "Inflection / Linear Point ➖")
-            st.write(f"- **Concavity state:** {concavity}")
+            if not (np.isfinite(ya) and np.isfinite(yb)):
+                continue
 
-            # Critical Point Solver
+            if abs(ya) < 1e-7:
+                root = float(aa)
+
+            elif ya * yb < 0:
+                left = float(aa)
+                right = float(bb)
+                fl = float(ya)
+
+                for _ in range(45):
+                    mid = (left + right) / 2
+                    fm = val(expr, mid)
+
+                    if fm is None:
+                        break
+
+                    if fl * fm <= 0:
+                        right = mid
+                    else:
+                        left = mid
+                        fl = fm
+
+                root = (left + right) / 2
+
+            else:
+                continue
+
+            if (
+                lo - 1e-7 <= root <= hi + 1e-7
+                and not any(abs(root - r) < 1e-4 for r in roots)
+            ):
+                roots.append(root)
+
+    except Exception:
+        pass
+
+    return sorted(roots)
+
+
+def curve(expr, xx):
+    try:
+        fn = sp.lambdify(x, expr, modules=["numpy"])
+
+        with np.errstate(all="ignore"):
+            yy = np.asarray(fn(xx), dtype=float)
+
+            if yy.ndim == 0:
+                yy = np.full_like(xx, float(yy))
+
+        yy[~np.isfinite(yy)] = np.nan
+        finite = yy[np.isfinite(yy)]
+
+        if finite.size:
+            cutoff = max(
+                1e4,
+                np.percentile(np.abs(finite), 95) * 30,
+            )
+            yy[np.abs(yy) > cutoff] = np.nan
+
+        return yy
+
+    except Exception:
+        return np.full_like(xx, np.nan)
+
+
+def fmt(number):
+    return "undefined" if number is None else f"{number:.5g}"
+
+
+def extremum_test(point):
+    eps = max(1e-5, abs(point) * 1e-5)
+
+    left = val(fp, point - eps)
+    right = val(fp, point + eps)
+
+    if left is None or right is None:
+        return "inconclusive near a domain boundary"
+
+    if left > 1e-7 and right < -1e-7:
+        return "local maximum (f′ changes + to −)"
+
+    if left < -1e-7 and right > 1e-7:
+        return "local minimum (f′ changes − to +)"
+
+    return "not classified as an extremum (no sign change detected)"
+
+
+# Sidebar controls
+with st.sidebar:
+    st.header("1 · Course and context")
+
+    course = st.selectbox(
+        "Course mode",
+        COURSES,
+        index=2,
+    )
+
+    context = st.selectbox("Context", CONTEXTS)
+
+    (
+        default_fn,
+        default_x,
+        default_xu,
+        default_y,
+        default_yu,
+        default_desc,
+        default_visual,
+    ) = SUGGESTIONS[context]
+
+    st.caption(default_desc)
+
+    source = st.radio(
+        "Function source",
+        [
+            "Suggested function",
+            "Build with parameters",
+            "Enter my own function",
+            "Fit curve to uploaded CSV data",
+        ],
+    )
+
+    st.header("2 · Model details")
+
+    x_name = st.text_input("Independent variable", default_x)
+    x_unit = st.text_input("Independent variable unit", default_xu)
+    y_name = st.text_input("Dependent variable", default_y)
+    y_unit = st.text_input("Dependent variable unit", default_yu)
+
+    description = st.text_area(
+        "Context description",
+        default_desc,
+        height=80,
+    )
+
+    ca, cb = st.columns(2)
+
+    with ca:
+        lo = st.number_input(
+            "Interval start",
+            value=0.0,
+            step=0.5,
+        )
+
+    with cb:
+        hi = st.number_input(
+            "Interval end",
+            value=10.0,
+            step=0.5,
+        )
+
+    function_text = default_fn
+    uploaded_df = None
+    fit_points = None
+
+    if source == "Fit curve to uploaded CSV data":
+        csv_file = st.file_uploader(
+            "Upload CSV with numeric x and y columns",
+            type=["csv"],
+        )
+
+        fit_degree = st.selectbox(
+            "Polynomial fit degree",
+            [1, 2, 3, 4, 5],
+            index=2,
+        )
+
+        if csv_file is not None:
             try:
-                crit_pts = sp.solve(f_prime_sym, x_sym)
-                valid_crit = [float(p.evalf()) for p in crit_pts if p.is_real and d_min <= float(p.evalf()) <= d_max]
-                st.write(f"- **Critical Points in Domain:** {valid_crit if valid_crit else 'None detected analytically'}")
-            except Exception:
-                st.write("- **Critical Points:** Numerical expression complex to solve analytically.")
+                uploaded_df = pd.read_csv(csv_file)
 
-        elif course_level == "Precalculus":
-            st.write("Emphasis: Analyzing function behaviors, rates of change, and end-behavior bounds.")
+                numeric_cols = list(
+                    uploaded_df.select_dtypes(include="number").columns
+                )
 
-        elif course_level == "Honors Algebra 2":
-            st.write("Emphasis: Function evaluation, domain/range limits, and average rate of change.")
+                if len(numeric_cols) < 2:
+                    st.error(
+                        "Your CSV needs at least two numeric columns: "
+                        "one for x and one for y."
+                    )
+                    uploaded_df = None
 
-        # ------------------------
-        # VISUAL SIMULATION STAGE
-        # ------------------------
-        st.markdown("---")
-        st.subheader("6. Interactive Visual Simulation Stage")
+                else:
+                    x_col = st.selectbox(
+                        "Column for independent variable x",
+                        numeric_cols,
+                        index=0,
+                    )
 
-        sim_type = preset["visual_type"]
-        norm_val = 0.5
-        if not np.isnan(y_eval):
-            y_valid_min = np.nanmin(y_plot)
-            y_valid_max = np.nanmax(y_plot)
-            if y_valid_max > y_valid_min:
-                norm_val = float(np.clip((y_eval - y_valid_min) / (y_valid_max - y_valid_min), 0.0, 1.0))
+                    y_options = [
+                        col for col in numeric_cols if col != x_col
+                    ]
 
-        if sim_type == "Walking Person (Prosthetic)":
-            leg_angle = int((norm_val - 0.5) * 60)
-            st.markdown(f"**Prosthetic Leg Gait Simulator** (Deflection Angle: `{leg_angle}°`)")
-            st.progress(norm_val)
+                    y_col = st.selectbox(
+                        "Column for dependent variable y",
+                        y_options,
+                        index=0,
+                    )
 
-        elif sim_type == "Moving Object / Projectile":
-            st.markdown(f"**Projectile Height State:** `{y_eval:.2f}` {units_y}")
-            st.progress(norm_val)
+                    clean = (
+                        uploaded_df[[x_col, y_col]]
+                        .replace([np.inf, -np.inf], np.nan)
+                        .dropna()
+                    )
 
-        elif sim_type == "Drug Tank Indicator":
-            st.markdown(f"**Concentration Fill Level:** `{norm_val * 100:.1f}%`")
-            st.progress(norm_val)
+                    if len(clean) <= fit_degree:
+                        st.error(
+                            f"A degree-{fit_degree} fit needs at least "
+                            f"{fit_degree + 1} valid data rows."
+                        )
 
-        elif sim_type == "Cell Colony / Population":
-            st.markdown(f"**Colony Density Indicator:** `{y_eval:.2f}` {units_y}")
-            st.progress(norm_val)
+                    else:
+                        coeffs = np.polyfit(
+                            clean[x_col].to_numpy(float),
+                            clean[y_col].to_numpy(float),
+                            fit_degree,
+                        )
 
-        elif sim_type == "Thermometer":
-            st.markdown(f"**Temperature Gauge:** `{y_eval:.1f}` {units_y}")
-            st.progress(norm_val)
+                        poly = np.poly1d(coeffs)
+                        terms = []
 
-        else: # Business Indicator
-            st.markdown(f"**Economic Growth Index Gauge:** `{y_eval:.2f}` {units_y}")
-            st.progress(norm_val)
+                        for i, coefficient in enumerate(coeffs):
+                            power = fit_degree - i
 
-# =========================================================
-# TAB 2: LATIN AMERICA HISTORICAL DATA
-# =========================================================
-with tab_data_reg:
-    st.header("Latin America Historical Data Analysis")
-    st.write("Explore historical macroeconomic indicator regressions from Latin America.")
+                            if abs(coefficient) < 1e-12:
+                                continue
 
-    years, data = get_historical_data()
+                            if power == 0:
+                                term = f"({coefficient:.12g})"
+                            elif power == 1:
+                                term = f"({coefficient:.12g})*x"
+                            else:
+                                term = (
+                                    f"({coefficient:.12g})*x^{power}"
+                                )
 
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        cat_hist = st.selectbox("Historical Category", ['Population', 'Unemployment rate', 'Life expectancy'], key="h_cat")
-        countries_hist = st.multiselect("Select Countries", list(data.keys()), default=['Argentina'], key="h_countries")
-    with col_d2:
-        deg_hist = st.slider("Polynomial Degree Fit", 1, 6, 3, key="h_deg")
-        step_hist = st.slider("Graph Year Step", 1, 10, 1, key="h_step")
+                            terms.append(term)
 
-    if countries_hist:
-        df_display = pd.DataFrame({c: data[c][cat_hist] for c in countries_hist}, index=years)
-        st.subheader("Raw Data Table")
-        st.dataframe(df_display.style.highlight_max(axis=0))
+                        function_text = "+".join(terms) if terms else "0"
 
-        st.subheader("Regression Curves & Extrapolations")
-        fig_h, ax_h = plt.subplots(figsize=(10, 5))
+                        fit_points = (
+                            clean[x_col].to_numpy(float),
+                            clean[y_col].to_numpy(float),
+                            x_col,
+                            y_col,
+                            poly,
+                        )
 
-        for c in countries_hist:
-            x_vals = years
-            y_vals = df_display[c].values
-            model = fit_poly_regression(x_vals, y_vals, deg_hist)
+                        st.success(
+                            f"Fitted a degree-{fit_degree} polynomial "
+                            f"to {len(clean)} rows."
+                        )
 
-            x_plot = np.arange(years[0], years[-1] + 1, step_hist)
-            y_plot = model.predict(x_plot.reshape(-1, 1))
+                        st.code("f(x) = " + function_text)
 
-            ax_h.scatter(x_vals, y_vals, label=f"{c} Data", alpha=0.6)
-            ax_h.plot(x_plot, y_plot, label=f"{c} Poly Fit (deg {deg_hist})")
+            except Exception as exc:
+                st.error(f"Could not read this CSV: {exc}")
 
-            # Extrapolation controls
-            extrap_years = st.number_input(f"Extrapolate years for {c}", min_value=0, max_value=50, value=0, key=f"extrap_{c}")
-            if extrap_years > 0:
-                x_extra = np.arange(years[-1] + 1, years[-1] + extrap_years + 1)
-                y_extra = model.predict(x_extra.reshape(-1, 1))
-                ax_h.plot(x_extra, y_extra, '--', label=f"{c} (Extrapolated)")
+    elif source == "Build with parameters":
+        family = st.selectbox(
+            "Function family",
+            [
+                "Polynomial",
+                "Rational",
+                "Exponential",
+                "Logarithmic",
+                "Trigonometric",
+            ],
+        )
 
-        ax_h.set_xlabel("Year")
-        ax_h.set_ylabel(cat_hist)
-        ax_h.grid(True, linestyle="--", alpha=0.5)
-        ax_h.legend()
-        st.pyplot(fig_h)
+        if family == "Polynomial":
+            aa = st.number_input("Quadratic a", value=1.0, step=0.5)
+            bb = st.number_input("Linear b", value=-4.0, step=0.5)
+            cc = st.number_input("Constant c", value=3.0, step=0.5)
+
+            function_text = f"({aa})*x^2+({bb})*x+({cc})"
+
+        elif family == "Rational":
+            aa = st.number_input("Numerator scale", value=10.0, step=1.0)
+            bb = st.number_input("Denominator shift", value=2.0, step=0.5)
+            cc = st.number_input("Vertical offset", value=0.0, step=0.5)
+
+            function_text = f"({aa})/(x-({bb}))+({cc})"
+
+        elif family == "Exponential":
+            aa = st.number_input("Initial scale", value=2.0, step=0.5)
+            bb = st.number_input("Growth/decay rate", value=0.2, step=0.05)
+            cc = st.number_input("Vertical offset", value=0.0, step=0.5)
+
+            function_text = f"({aa})*exp(({bb})*x)+({cc})"
+
+        elif family == "Logarithmic":
+            aa = st.number_input("Log scale", value=2.0, step=0.5)
+            bb = st.number_input("Horizontal shift", value=1.0, step=0.5)
+            cc = st.number_input("Vertical offset", value=0.0, step=0.5)
+
+            function_text = f"({aa})*log(x-({bb}))+({cc})"
+
+        else:
+            aa = st.number_input("Amplitude", value=5.0, step=0.5)
+            bb = st.number_input("Angular frequency", value=1.0, step=0.25)
+            cc = st.number_input("Vertical shift", value=0.0, step=0.5)
+
+            function_text = f"({aa})*sin(({bb})*x)+({cc})"
+
+    elif source == "Enter my own function":
+        function_text = st.text_input(
+            "f(x) =",
+            default_fn,
+            help=(
+                "Examples: x^2-4*x+3, 1/(x-2), exp(x), "
+                "log(x), sin(x), cos(x), tan(x)."
+            ),
+        )
+
+    st.header("3 · Visual simulation")
+
+    visuals = [
+        "Walking person with prosthetic leg",
+        "Moving object or projectile",
+        "Tank / concentration indicator",
+        "Population / cell colony",
+        "Thermometer / weather indicator",
+        "Business / economic indicator",
+    ]
+
+    visual = st.selectbox(
+        "Contextual visual",
+        visuals,
+        index=visuals.index(default_visual),
+    )
+
+    speed = st.slider("Playback speed", 1, 10, 5)
+    play = st.toggle("Play animation", value=False)
+    reset = st.button("Reset animation")
+
+
+# Validate the interval
+if hi <= lo:
+    st.error("Interval end must be greater than interval start.")
+    st.stop()
+
+if source == "Fit curve to uploaded CSV data" and fit_points is None:
+    st.warning(
+        "Upload a CSV with at least two numeric columns "
+        "and enough valid rows to fit a curve."
+    )
+    st.stop()
+
+try:
+    f = parse_function(function_text)
+except ValueError as exc:
+    st.error(f"Function input error: {exc}")
+    st.info(
+        "Correct the expression. Supported examples: x^2, 1/(x-2), "
+        "exp(x), log(x), sin(x), cos(x), tan(x)."
+    )
+    st.stop()
+
+fp = sp.simplify(sp.diff(f, x))
+fpp = sp.simplify(sp.diff(f, x, 2))
+
+# Animation state
+if "motion_x" not in st.session_state:
+    st.session_state.motion_x = float(lo)
+
+if reset:
+    st.session_state.motion_x = float(lo)
+
+if play:
+    st_autorefresh(
+        interval=1100 - speed * 90,
+        key="animation_refresh",
+    )
+
+    st.session_state.motion_x += (hi - lo) / (22 - speed)
+
+    if st.session_state.motion_x > hi:
+        st.session_state.motion_x = float(lo)
+
+else:
+    st.session_state.motion_x = min(
+        max(st.session_state.motion_x, lo),
+        hi,
+    )
+
+if play or reset:
+    st.session_state["current_input"] = float(
+        st.session_state.motion_x
+    )
+
+
+# Function and derivatives
+st.subheader("Function and derivatives")
+
+c1, c2, c3 = st.columns(3)
+
+c1.markdown("**Function**")
+c1.latex("f(x)=" + sp.latex(f))
+
+c2.markdown("**First derivative**")
+c2.latex(
+    "f'(x)=" + sp.latex(fp)
+    if course != "Honors Algebra 2"
+    else r"\text{Optional extension}"
+)
+
+c3.markdown("**Second derivative**")
+c3.latex(
+    "f''(x)=" + sp.latex(fpp)
+    if course == "Calculus"
+    else r"\text{Calculus preview}"
+)
+
+if course == "Honors Algebra 2":
+    st.caption(
+        "Focus: function values, graph shape, domain, and average rate of change."
+    )
+elif course == "Precalculus":
+    st.caption(
+        "Focus: function families, transformations, domain, and rates of change; "
+        "derivatives are a preview."
+    )
+else:
+    st.caption(
+        "Calculus mode includes derivative tests, extrema, monotonicity, "
+        "concavity, and inflection analysis."
+    )
+
+
+# Interactive graph controls
+_, d1, d2 = st.columns(3)
+
+current = st.slider(
+    "Current input x",
+    float(lo),
+    float(hi),
+    float(min(max(st.session_state.motion_x, lo), hi)),
+    key="current_input",
+)
+
+show_fp = d1.checkbox("Show f′(x)", value=True)
+show_fpp = d2.checkbox(
+    "Show f″(x)",
+    value=(course == "Calculus"),
+)
+
+aoc1, aoc2 = st.columns(2)
+
+a = aoc1.slider(
+    "Average-rate interval start",
+    float(lo),
+    float(hi),
+    float(lo),
+    key="avg_start",
+)
+
+b = aoc2.slider(
+    "Average-rate interval end",
+    float(lo),
+    float(hi),
+    float(hi),
+    key="avg_end",
+)
+
+
+# Build the graph
+xs = np.linspace(lo, hi, 1000)
+fig = go.Figure()
+
+fig.add_trace(
+    go.Scatter(
+        x=xs,
+        y=curve(f, xs),
+        name="f(x)",
+        mode="lines",
+        line=dict(width=3),
+    )
+)
+
+if fit_points is not None:
+    px, py, x_col_name, y_col_name, _poly = fit_points
+
+    fig.add_trace(
+        go.Scatter(
+            x=px,
+            y=py,
+            name="Uploaded data",
+            mode="markers",
+            marker=dict(size=8, color="#7b2cbf"),
+        )
+    )
+
+if show_fp:
+    fig.add_trace(
+        go.Scatter(
+            x=xs,
+            y=curve(fp, xs),
+            name="f′(x)",
+            mode="lines",
+            line=dict(dash="dash"),
+        )
+    )
+
+if show_fpp:
+    fig.add_trace(
+        go.Scatter(
+            x=xs,
+            y=curve(fpp, xs),
+            name="f″(x)",
+            mode="lines",
+            line=dict(dash="dot"),
+        )
+    )
+
+fy = val(f, current)
+slope = val(fp, current)
+
+if fy is not None:
+    fig.add_trace(
+        go.Scatter(
+            x=[current],
+            y=[fy],
+            name="Current point",
+            mode="markers",
+            marker=dict(size=12),
+        )
+    )
+
+    if slope is not None:
+        tx = np.array([lo, hi])
+
+        fig.add_trace(
+            go.Scatter(
+                x=tx,
+                y=fy + slope * (tx - current),
+                name="Tangent line",
+                mode="lines",
+                line=dict(color="red", dash="dash"),
+            )
+        )
+
+if b > a:
+    ya = val(f, a)
+    yb = val(f, b)
+
+    if ya is not None and yb is not None:
+        avg = (yb - ya) / (b - a)
+        sx = np.array([lo, hi])
+
+        fig.add_trace(
+            go.Scatter(
+                x=sx,
+                y=ya + avg * (sx - a),
+                name="Secant line",
+                mode="lines",
+                line=dict(color="green", dash="dash"),
+            )
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=[a, b],
+                y=[ya, yb],
+                name="Interval endpoints",
+                mode="markers",
+            )
+        )
+
+fig.update_layout(
+    template="plotly_white",
+    height=520,
+    margin=dict(l=15, r=15, t=35, b=15),
+    xaxis_title=f"{x_name} ({x_unit})",
+    yaxis_title=f"{y_name} ({y_unit})",
+    legend=dict(orientation="h", y=1.12),
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+
+# Rates of change
+st.subheader("Rates of change")
+
+r1, r2, r3 = st.columns(3)
+
+r1.metric("f(x)", fmt(fy))
+
+r2.metric(
+    "Instantaneous rate f′(x)",
+    fmt(slope),
+    help=f"Units: {y_unit} per {x_unit}.",
+)
+
+r3.metric(
+    "Second derivative f″(x)",
+    fmt(val(fpp, current)),
+    help=f"Units: {y_unit} per {x_unit} squared.",
+)
+
+if b > a:
+    ya = val(f, a)
+    yb = val(f, b)
+
+    if ya is not None and yb is not None:
+        st.write(
+            f"**Average rate of change:** "
+            f"{fmt((yb - ya) / (b - a))} {y_unit} per {x_unit}."
+        )
     else:
-        st.warning("Please select at least one country to display data.")
+        st.warning(
+            "Average rate is undefined because an endpoint "
+            "is outside the real-valued domain."
+        )
+else:
+    st.info(
+        "Choose different interval endpoints to calculate average rate of change."
+    )
+
+
+# Interpret the function in context
+st.subheader("Interpretation in context")
+
+if fy is None:
+    st.warning(
+        f"The function is undefined at {x_name} = {current:g}; "
+        "move the point to a valid input."
+    )
+else:
+    st.write(
+        f"At **{x_name} = {current:.4g} {x_unit}**, "
+        f"the model predicts **{y_name} = {fy:.4g} {y_unit}**."
+    )
+
+    if slope is not None:
+        trend = (
+            "increasing"
+            if slope > 1e-7
+            else "decreasing"
+            if slope < -1e-7
+            else "locally flat"
+        )
+
+        st.write(
+            f"The first derivative is {slope:.4g} {y_unit} per {x_unit}; "
+            f"the modeled quantity is **{trend}** at this input."
+        )
+
+    curv = val(fpp, current)
+
+    if curv is not None:
+        shape = (
+            "concave up"
+            if curv > 1e-7
+            else "concave down"
+            if curv < -1e-7
+            else "has approximately zero second derivative"
+        )
+
+        st.write(
+            f"The second derivative is {curv:.4g} {y_unit} per {x_unit}², "
+            f"so the curve is **{shape}** locally."
+        )
+
+if context in ("Engineering", "Sports science"):
+    st.caption(
+        "For position-versus-time, f′ represents velocity and f″ represents "
+        "acceleration. For height-versus-time, they represent vertical velocity "
+        "and acceleration."
+    )
+elif context in ("Business", "Economic forecasting"):
+    st.caption(
+        "The first derivative describes marginal change; the second derivative "
+        "indicates whether the rate of growth or decline is itself changing."
+    )
+elif context == "Medical":
+    st.caption(
+        "This is an educational concentration model only, not medical advice "
+        "or a dosing recommendation."
+    )
+elif context == "Bioengineering":
+    st.caption(
+        "For the joint-angle example, derivatives represent angular rate and "
+        "change in angular rate; this is not a clinical gait assessment."
+    )
+else:
+    st.caption(description)
+
+
+# Calculus analysis
+st.subheader("Calculus analysis")
+
+if course == "Calculus":
+    critical = roots_in(fp, lo, hi)
+    crit_values = [
+        (q, val(f, q))
+        for q in critical
+        if val(f, q) is not None
+    ]
+
+    st.markdown("**Critical points and derivative-test classification**")
+
+    if crit_values:
+        for q, yq in crit_values:
+            st.write(
+                f"- x ≈ {q:.6g}, f(x) ≈ {yq:.6g}: "
+                f"{extremum_test(q)}."
+            )
+    else:
+        st.write(
+            "No stationary critical points detected in this interval. "
+            "Points where f′ is undefined may also be critical when f is defined."
+        )
+
+    trends = []
+    bounds = [lo] + critical + [hi]
+
+    for u, v in zip(bounds[:-1], bounds[1:]):
+        if v - u < 1e-7:
+            continue
+
+        d = val(fp, (u + v) / 2)
+
+        if d is not None:
+            direction = (
+                "increasing"
+                if d > 1e-7
+                else "decreasing"
+                if d < -1e-7
+                else "approximately constant"
+            )
+
+            trends.append(
+                f"{direction} on ({u:.4g}, {v:.4g})"
+            )
+
+    st.write(
+        "**Intervals:** "
+        + ("; ".join(trends) if trends else "Could not reliably determine intervals.")
+    )
+
+    st.markdown("**Absolute extrema on the selected closed interval**")
+
+    candidates = [(lo, val(f, lo)), (hi, val(f, hi))] + crit_values
+    candidates = [p for p in candidates if p[1] is not None]
+
+    if candidates:
+        mn = min(candidates, key=lambda p: p[1])
+        mx = max(candidates, key=lambda p: p[1])
+
+        st.write(
+            f"- Minimum candidate: f({mn[0]:.5g}) ≈ {mn[1]:.5g}."
+        )
+
+        st.write(
+            f"- Maximum candidate: f({mx[0]:.5g}) ≈ {mx[1]:.5g}."
+        )
+
+        st.caption(
+            "Numerical candidates only. Discontinuities or excluded points "
+            "can mean absolute extrema do not exist."
+        )
+    else:
+        st.write("No valid extrema candidates found.")
+
+    st.markdown("**Concavity and inflection points**")
+
+    inflect = roots_in(fpp, lo, hi)
+    confirmed = []
+
+    for q in inflect:
+        eps = max(1e-4, (hi - lo) * 1e-5)
+
+        yl = val(fpp, max(lo, q - eps))
+        yr = val(fpp, min(hi, q + eps))
+        yq = val(f, q)
+
+        if (
+            yl is not None
+            and yr is not None
+            and yq is not None
+            and yl * yr < -1e-10
+        ):
+            confirmed.append((q, yq, yl, yr))
+
+    if confirmed:
+        for q, yq, yl, yr in confirmed:
+            before = "concave up" if yl > 0 else "concave down"
+            after = "concave up" if yr > 0 else "concave down"
+
+            st.write(
+                f"- ({q:.6g}, {yq:.6g}); concavity changes "
+                f"from {before} to {after}."
+            )
+    else:
+        st.write(
+            "No inflection points with a confirmed concavity change were detected."
+        )
+
+    concavity = []
+
+    for u, v in zip([lo] + inflect, inflect + [hi]):
+        if v - u < 1e-7:
+            continue
+
+        q = val(fpp, (u + v) / 2)
+
+        if q is not None:
+            shape = (
+                "concave up"
+                if q > 0
+                else "concave down"
+                if q < 0
+                else "near-linear"
+            )
+
+            concavity.append(
+                f"{shape} on ({u:.4g}, {v:.4g})"
+            )
+
+    st.write(
+        "**Concavity intervals:** "
+        + (
+            "; ".join(concavity)
+            if concavity
+            else "Not determined reliably."
+        )
+    )
+
+else:
+    st.info(
+        "Choose Calculus mode for critical-point tests, absolute-extrema "
+        "candidates, monotonic intervals, and inflection analysis."
+    )
+
+
+# Domain restrictions
+st.markdown("**Domain restrictions and discontinuities**")
+
+denom = sp.denom(sp.together(f))
+notes = []
+
+if denom != 1:
+    poles = roots_in(denom, lo, hi)
+
+    if poles:
+        notes.append(
+            "Denominator may be zero near x ≈ "
+            + ", ".join(f"{q:.5g}" for q in poles)
+            + "."
+        )
+
+for node in sp.preorder_traversal(f):
+    if node.func == sp.log:
+        notes.append(
+            "Logarithms require their argument to be greater than zero."
+        )
+        break
+
+    if node.func == sp.sqrt:
+        notes.append(
+            "Square roots require their radicand to be nonnegative for real outputs."
+        )
+        break
+
+if notes:
+    for note in notes:
+        st.write("- " + note)
+else:
+    st.write(
+        "No common denominator, logarithm, or square-root restriction "
+        "was detected in this interval. This numerical check is not a proof "
+        "of the full domain."
+    )
+
+
+# Context simulation
+st.subheader("Context simulation")
+
+st.caption(
+    "The visual level is normalized to finite function values in the selected "
+    "interval. It is an illustrative scale, not a physical measurement unless "
+    "the model supports that interpretation."
+)
+
+ys = curve(f, xs)
+finite = ys[np.isfinite(ys)]
+
+if fy is not None and finite.size:
+    ymin = float(np.min(finite))
+    ymax = float(np.max(finite))
+
+    if abs(ymax - ymin) < 1e-10:
+        level = 0.5
+    else:
+        level = min(1, max(0, (fy - ymin) / (ymax - ymin)))
+
+    pct = int(round(level * 100))
+else:
+    pct = 0
+
+emojis = {
+    "Walking person with prosthetic leg": "🚶 🦿",
+    "Moving object or projectile": "🚀",
+    "Tank / concentration indicator": "🧪",
+    "Population / cell colony": "🦠",
+    "Thermometer / weather indicator": "🌡️",
+    "Business / economic indicator": "📊",
+}
+
+left, right = st.columns([1, 2])
+
+with left:
+    st.markdown(
+        f"<div style='font-size:4rem;text-align:center'>"
+        f"{emojis[visual]}</div>"
+        f"<div style='text-align:center;font-weight:600'>"
+        f"{html.escape(visual)}</div>",
+        unsafe_allow_html=True,
+    )
+
+with right:
+    st.write(
+        f"**Simulation input:** {current:.4g} {x_unit} · "
+        f"**Output:** {fmt(fy)} {y_unit}"
+    )
+
+    st.progress(pct, text=f"Normalized model level: {pct}%")
+
+    descriptions = {
+        "Walking person with prosthetic leg": (
+            "The indicator follows the selected function as a conceptual "
+            "gait-cycle cue; it is not a biomechanical or clinical simulation."
+        ),
+        "Moving object or projectile": (
+            "The indicator tracks the modeled output. If f is height versus "
+            "time, interpret the value as modeled height."
+        ),
+        "Tank / concentration indicator": (
+            "The fill level is normalized output, not a real volume, dose, "
+            "or treatment recommendation."
+        ),
+        "Population / cell colony": (
+            "The indicator reflects normalized model output, not a measured cell count."
+        ),
+        "Thermometer / weather indicator": (
+            "Read the actual modeled temperature and units above; the bar itself is normalized."
+        ),
+        "Business / economic indicator": (
+            "The indicator reflects normalized output; use the graph and derivatives "
+            "to understand growth and changing rate."
+        ),
+    }
+
+    st.write(descriptions[visual])
+
+st.caption(
+    "Symbolic derivatives are exact when SymPy can express them. Detected "
+    "critical points and inflection points may be numerical approximations; "
+    "zeros are not automatically classified as extrema or inflection points."
+)
